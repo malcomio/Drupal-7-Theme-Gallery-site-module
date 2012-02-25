@@ -245,8 +245,9 @@ function themedemos_fetch_from_drupal() {
     if($mismatch) {
       $message .= "<p>There has been a problem - $mismatch themes are missing</p>";
     }
-
-    $message .= $drush;
+    $message .= '<p>cd public_html; ';
+    $message .= $drush . '; ';
+    $message .= str_replace(' dl ', ' en ', $drush) . ' -y';
     watchdog('themedemos', $message);
     drupal_set_message($message);
 

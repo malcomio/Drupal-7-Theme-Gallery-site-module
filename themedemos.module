@@ -1,0 +1,414 @@
+<?php
+
+/**
+ * implementation of hook_menu
+ */
+function themedemos_menu() {
+  $items = array(
+    'themedemos/set_theme/%' => array(
+      'page callback' => 'themedemos_set_theme',
+      'access callback' => TRUE,
+      'page arguments' => array(2, 3)
+    ),
+    'themedemos/theme-edit/%/%' => array(
+      'page callback' => 'themedemos_update_attributes',
+      'page arguments' => array(2, 3),
+      'access callback' => TRUE,
+    ),
+  );
+  return $items;
+}
+
+/**
+ * set the current default theme
+ * @param type $theme
+ * @return type 
+ */
+function themedemos_set_theme($theme, $broken_theme = '') {
+  global $user;
+
+
+  if($broken_theme) {
+    watchdog('Theme Gallery', 'A user reported a problem with the @theme theme.', array('@theme' => $broken_theme), WATCHDOG_ERROR);
+  }
+
+// Save the setting for authenticated users, if the "select different theme"
+// permission has been granted.
+  if($user->uid > 0 && user_access('select different theme')) {
+    $account = user_load($user->uid);
+    user_save($account, array(
+      'theme' => $theme,
+    ));
+    variable_set('theme_default', $theme);
+  }
+// Otherwise save the setting in the user's session.
+  elseif(user_access('switch theme')) {
+    $_SESSION['custom_theme'] = $theme;
+  }
+
+  drupal_set_message(t("The theme has been set to @theme", array('@theme' => $theme)));
+  drupal_goto($_SERVER['HTTP_REFERER']);
+  return '';
+}
+
+/**
+ * implementation of hook_cron
+ */
+function themedemos_cron() {
+
+// get all the current themes on the site
+  $themes = system_rebuild_theme_data();
+  foreach($themes as &$theme) {
+// if there is no node for the theme, create one
+    if(!themedemos_themenode_exists($theme->info['name'])) {
+      if(themedemos_themenode_create($theme)) {
+        drupal_set_message($theme->info['name'] . ' has been created');
+        watchdog('themedemos', $theme->info['name'] . ' has been created');
+      }
+    }
+  }
+//TODO: if theme is no longer here, delete the node
+// check for new themes on drupal.org
+  themedemos_fetch_from_drupal();
+}
+
+/**
+ * Create a node for the theme
+ * @param theme object $theme
+ * @return type 
+ */
+function themedemos_themenode_create($theme) {
+  $node = new stdClass();
+  $node->type = 'themetype';
+  $node->status = 1;
+  $node->uid = 1;
+  $node->title = $theme->info['name'];
+  $node->promote = 1;
+  $node->sticky = 0;
+//   $node->format = 3;
+  $node->language = LANGUAGE_NONE;
+  $node->revision = 0;
+  $node->path = array('alias' => 'content/themes/' . $theme->name);
+
+  $node->body[$node->language][0]['value'] = $theme->info['description'];
+  $node->body[$node->language][0]['summary'] = $theme->info['description'];
+  $node->body[$node->language][0]['format'] = 'filtered_html';
+
+  if(array_key_exists('project', $theme->info)) {
+
+    $node->field_theme_project['und'][0]['value'] = $theme->info['project'];
+    $node->field_theme_version['und'][0]['value'] = $theme->info['version'];
+    $node->field_theme_name['und'][0]['value'] = $theme->name;
+
+    // deal with core themes
+    if($theme->info['project'] != 'drupal') {
+      $download_link = array(
+        'url' => 'http://ftp.drupal.org/files/projects/' . $theme->info['project'] . '-' . $theme->info['version'] . '.tar.gz',
+      );
+      $node->field_theme_link['und'][0] = $download_link;
+
+      $project_page = array(
+        'url' => 'http://drupal.org/project/' . $theme->info['project'],
+      );
+      $node->field_theme_page['und'][0] = $project_page;
+    }
+  }
+
+  if(array_key_exists('screenshot', $theme->info)) {
+    $file_path = drupal_realpath($theme->info['screenshot']); // Create a File object
+
+    if(file_exists($file_path)) {
+      $file = (object) array(
+          'uid' => 1,
+          'uri' => $file_path,
+          'filemime' => file_get_mimetype($file_path),
+          'status' => 1,
+      );
+      $file = file_copy($file, 'public://'); // Save the file to the root of the files directory. You can specify a subdirectory, for example, 'public://images' 
+      $node->field_theme_screenshot[LANGUAGE_NONE][0] = (array) $file; //associate the file object with the image field:      
+    }
+  }
+
+  if(node_submit($node)) {
+    node_save($node);
+    return TRUE;
+  }
+  else
+    return FALSE;
+}
+
+/**
+ * check whether there is a corresponding node for the theme name
+ * @param type $theme_name
+ * @return type 
+ */
+function themedemos_themenode_exists($theme_name) {
+  $num_rows = 0;
+  $result = db_query("SELECT * FROM {node} n WHERE type='themetype' AND title = :title", array(':title' => $theme_name));
+  return (bool) $result->rowCount();
+}
+
+/**
+ * implementation of hook_preprocess_node
+ */
+function themedemos_preprocess_node(&$variables) {
+  global $theme_key;
+// if on a theme page, and that is not the current theme, show a link to set current
+  if(arg(0) == 'node' && $variables['type'] == 'themetype' && ($theme_key != $variables['field_theme_name'][0]['value'])) {
+//    dsm($variables);
+    drupal_set_message(
+      t('<a href="/themedemos/set_theme/@theme">Show the site using the @theme theme</a>', array('@theme' => $variables['field_theme_name'][0]['value'])));
+  }
+}
+
+function themedemos_preprocess_page(&$variables) {
+//  dsm($variables);
+  global $theme_key;
+  drupal_set_message(t("You are currently using the <a href='/content/themes/@theme' id='current-theme'>@theme</a> theme. <a href='/admin/appearance/settings/@theme'>Edit the theme settings</a>.", array('@theme' => $theme_key)));
+
+  drupal_set_message(t('If the current theme has broken the site, <a href="/themedemos/set_theme/bartik/@theme">click here to reset the theme</a>', array('@theme' => $theme_key)));
+//  if(arg(0) != 'theme-gallery') {
+//    drupal_set_message("<a href='/theme-gallery'>Click here to change the current theme</a>.");
+//  }
+}
+
+/**
+ * check for new themes on d.o and send an email if there are any
+ */
+function themedemos_fetch_from_drupal() {
+
+// get list of current themes
+  $theme_dir = opendir('/home/sites/drupal7themegallery.com/public_html/sites/all/themes');
+  $existing_themes = array();
+
+  while($filename = readdir($theme_dir)) {
+    if(!($filename == '.' || $filename == '..' || strstr($filename, '.txt'))) {
+      $existing_themes[] = $filename;
+    }
+  }
+
+  $total_themes = $new_themes = $existing_themes_num = 0;
+  $drush = 'drush dl ';
+
+// fetch theme list page from drupal.orgs
+  $url = 'http://drupal.org/project/themes/index?project-status=0&drupal_core=103';
+
+  $agent = "Mozilla/4.0 (compatible; MSIE 5.01; Windows NT 5.0)";
+  $curl = curl_init();
+  curl_setopt($curl, CURLOPT_URL, $url);
+  curl_setopt($curl, CURLOPT_USERAGENT, $agent);
+  curl_setopt($curl, CURLOPT_RETURNTRANSFER, 1);
+  curl_setopt($curl, CURLOPT_FOLLOWLOCATION, 1);
+  curl_setopt($curl, CURLOPT_VERBOSE, false);
+  curl_setopt($curl, CURLOPT_TIMEOUT, 120);
+  curl_setopt($curl, CURLOPT_SSL_VERIFYPEER, FALSE);
+  curl_setopt($curl, CURLOPT_SSLVERSION, 3);
+  curl_setopt($curl, CURLOPT_SSL_VERIFYHOST, FALSE);
+
+  session_write_close();
+  $page = curl_exec($curl);
+
+// use regex to extract the project names
+  preg_match_all('/project\/(.*)"/', $page, $matches);
+  foreach($matches[1] as $project) {
+// get rid of any irrelevant links
+    $irrelevant = array(
+      'drupal',
+      'modules',
+      'starterkit_touchpro',
+      'lemontwist',
+      'bartik',
+      'facebook_comments_box',
+    );
+    if(!(strstr($project, ' ') || strstr($project, '/') || strstr($project, '%2B') || in_array($project, $irrelevant))) {
+
+// count how many themes there are so we can check it against drupal.org
+      $total_themes++;
+
+// compare against current directory list
+      if(!in_array($project, $existing_themes)) {
+        $new_themes++;
+        $drush .= $project . ' ';
+      }
+      else {
+        $existing_themes_num++;
+      }
+    }
+  }
+
+  if($new_themes || ($existing_themes_num != $total_themes)) {
+    $message .= "<p>There are $total_themes themes on $url</p>";
+    $message .= "<p>There are already $existing_themes_num themes on this site</p>";
+    $message .= "<p>The drush command will fetch $new_themes themes</p>";
+
+    $mismatch = $total_themes - $existing_themes_num - $new_themes;
+    if($mismatch) {
+      $message .= "<p>There has been a problem - $mismatch themes are missing</p>";
+    }
+
+    $message .= $drush;
+    watchdog('themedemos', $message);
+    drupal_set_message($message);
+
+    $headers = 'MIME-Version: 1.0' . "\r\n";
+    $headers .= 'Content-type: text/html; charset=iso-8859-1' . "\r\n";
+
+// Additional headers
+    $headers .= 'To: Malcolm Young <malcolm@rubydesign.co.uk>' . "\r\n";
+    $headers .= 'From: Drupal 7 Theme Gallery <info@drupal7themegallery.com>' . "\r\n";
+
+    $to = 'malcolm@rubydesign.co.uk';
+    $subject = 'Theme Gallery cron job';
+
+// Mail it
+    mail($to, $subject, $message, $headers);
+  }
+}
+
+/**
+ * implementation of hook_init
+ */
+function themedemos_init() {
+
+// redirect taxonomy pages to the appropriate view
+  if(arg(0) == 'taxonomy' && arg(1) == 'term' && !(arg(3) == 'edit') && is_numeric(arg(2))) {
+    drupal_goto('theme-gallery', array(
+      'query' => array(
+        'field_theme_tags_tid[]' => arg(2))));
+  }
+
+  drupal_add_css(drupal_get_path('module', 'themedemos') . '/themedemos.css', array(
+    'group' => CSS_THEME,
+    'weight' => 9999,
+  ));
+  drupal_add_js(drupal_get_path('module', 'themedemos') . '/themedemos.js');
+}
+
+/**
+ * implementation of hook_block_info
+ */
+function themedemos_block_info() {
+  $blocks['ruby'] = array(
+    'info' => 'Ruby Design',
+    'cache' => DRUPAL_CACHE_GLOBAL
+  );
+  $blocks['themesettings'] = array(
+    'info' => 'Edit theme settings',
+  );
+  return $blocks;
+}
+
+/**
+ * implementation of hook_block_view
+ */
+function themedemos_block_view($delta) {
+  $block = array();
+  switch($delta) {
+    case 'ruby':
+      $block['subject'] = '';
+      $block['content'] = '<a href="http://rubydesign.co.uk" title="Ruby Design - web and print design, Drupal development">'
+        . '<img src="' . base_path() . drupal_get_path('module', 'themedemos')
+        . '/ruby_logo_160.jpg" alt="Ruby Design"/></a>';
+      break;
+    case 'themesettings':
+      $block['subject'] = '';
+      $block['content'] = '';
+
+      break;
+  }
+  return $block;
+}
+
+/**
+ * implementation of hook_action_info
+ */
+function themedemos_action_info() {
+  return array(
+    'themedemos_add_attribute_action' => array(
+      'label' => t('Add an attribute to a theme'),
+      'type' => 'system',
+      'configurable' => TRUE,
+      'triggers' => array('any'),
+    ),
+  );
+}
+
+function themedemos_add_attribute_action(&$entity, $context = array()) {
+  themedemos_update_attributes($context['attribute'], $entity->nid);
+}
+
+/**
+ * settings form for themedemos_add_attribute_action().
+ */
+function themedemos_add_attribute_action_form($context) {
+  $form['attribute'] = array(
+    '#title' => t('The attribute to add'),
+    '#type' => 'textfield',
+    '#default_value' => $context['attribute'],
+  );
+  return $form;
+}
+
+/**
+ * Submit handler for action_example_node_sticky_action.
+ *
+ * Returns an associative array of values which will be available in the
+ * $context when an action is executed.
+ */
+function themedemos_add_attribute_action_submit($form, $form_state) {
+  return array('attribute' => $form_state['values']['attribute']);
+}
+
+/**
+ * apply the given attribute to the selected nodes
+ * @param type $attribute
+ * @param type $nodelist
+ */
+function themedemos_update_attributes($attribute, $nodelist) {
+  $nodes = explode(',', $nodelist);
+
+  // check whether the node already has the attribute
+  foreach($nodes as $node_id) {
+    $node = node_load($node_id);
+    $has_attribute = FALSE;
+
+    if(count($node->field_theme_attributes)) {
+      foreach($node->field_theme_attributes[LANGUAGE_NONE] as $array) {
+        if(in_array($attribute, $array)) {
+          $has_attribute = TRUE;
+        }
+      }
+    }
+
+    // don't bother changing the node - the attribute is already there
+    if($has_attribute) {
+      continue;
+    }
+    $node->field_theme_attributes[LANGUAGE_NONE][]['value'] = $attribute;
+    // check if the attribute is valid before saving
+    field_attach_validate('node', $node);
+
+    drupal_set_message("The attribute $attribute has been added to {$node->title}");
+    node_save($node);
+  }
+}
+
+function themedemos_form_alter(&$form, &$form_state, $form_id) {
+
+  // hide stuff from non-admins on the theme settings page
+  if($form_id == 'system_theme_settings' && !user_access('access administration menu')) {
+    $form['logo']['default_logo']['#disabled'] = TRUE;
+    $form['logo']['settings']['logo_path']['#type'] = 'hidden';
+    $form['logo']['settings']['logo_upload']['#type'] = 'hidden';
+    $form['favicon']['default_favicon']['#disabled'] = TRUE;
+  }
+  // redirect the switchtheme form
+  if($form_id == 'switchtheme_switch_form') {
+    $form['#submit'][] = 'themedemos_switchtheme_submit';
+  }
+}
+
+// redirect to the relevant theme page
+function themedemos_switchtheme_submit(&$form, &$form_state) {
+  $form_state['redirect'] = 'content/themes/'.$form_state['values']['theme'];
+}

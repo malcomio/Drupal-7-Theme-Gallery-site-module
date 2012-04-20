@@ -215,6 +215,7 @@ function themedemos_fetch_from_drupal() {
     $irrelevant = array(
       'drupal',
       'modules',
+      'distributions',
       'starterkit_touchpro',
       'lemontwist',
       'bartik',

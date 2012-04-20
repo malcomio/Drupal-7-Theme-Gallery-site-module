@@ -1,5 +1,0 @@
-name = Theme demos
-description = Demonstrate the system themes
-core = 7.x
-package = Ruby Design
-configure = admin/config/content/themedemos

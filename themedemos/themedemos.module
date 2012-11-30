@@ -297,6 +297,9 @@ function themedemos_block_info() {
   $blocks['themesettings'] = array(
     'info' => 'Edit theme settings',
   );
+  $blocks['themecount'] = array(
+    'info' => 'Display count of themes',
+  );
   return $blocks;
 }
 
@@ -315,10 +318,19 @@ function themedemos_block_view($delta) {
     case 'themesettings':
       $block['subject'] = '';
       $block['content'] = '';
-
+      break;
+    case 'themecount':
+      $block['subject'] = '';
+      $block['content'] = 'There are currently ' . themedemos_count() . ' themes in the gallery';
       break;
   }
   return $block;
+}
+
+
+function themedemos_count() {
+  $theme_count = count(list_themes());
+  return '<span class="theme_count">' . $theme_count . '</span>';
 }
 
 /**
